@@ -1,0 +1,12 @@
+#
+# for convert, please see https://www.eg.bucknell.edu/~csci320/mips_web/
+#
+
+# add $s0, $s3, $s5
+41254944
+18020000 
+1879769063
+-1677066239
+1879900149
+1879900151
+
