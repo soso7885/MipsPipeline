@@ -157,6 +157,11 @@ static inline void fn_ori(uint32_t *out, uint32_t in, uint32_t imm)
 	*out = in | imm;
 }
 
+static inline void fn_lui(uint32_t *out, uint32_t in, uint32_t imm)
+{
+	*out = imm * 65536;
+}
+
 struct opcode_lookup_table Opcode_table[] = {
 	[OP_SLL] = {
 		.type = R_FORMAT,
@@ -398,6 +403,7 @@ struct opcode_lookup_table Opcode_table[] = {
 		.type = I_FORMAT,
 		.codes.opcode = 0x0F,
 		.mnemonic = "lui",
+		.alu_fn = fn_lui,
 		.describe = "Load upper immediate",
 	},
 

@@ -1,9 +1,13 @@
 #
-# for convert, please see https://www.eg.bucknell.edu/~csci320/mips_web/
+# for convert assembly to binary, please use the online tool:
+# http://www.kurtm.net/mipsasm/index.cgi
 #
 
+# addi $s0, $s3, 100
+556269668
 # add $s0, $s3, $s5
 41254944
+
 18020000 
 1879769063
 -1677066239
