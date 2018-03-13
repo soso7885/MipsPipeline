@@ -159,7 +159,17 @@ static inline void fn_ori(uint32_t *out, uint32_t in, uint32_t imm)
 
 static inline void fn_lui(uint32_t *out, uint32_t in, uint32_t imm)
 {
-	*out = imm * 65536;
+	*out = imm * 65536;	// not sure
+}
+
+static inline void fn_calc_addr_signed(uint32_t *out, uint32_t in, uint32_t imm)
+{
+	*out = in + ((int32_t)imm);
+}
+
+static inline void fn_calc_addr_unsigned(uint32_t *out, uint32_t in, uint32_t imm)
+{
+	*out = in + imm;
 }
 
 struct opcode_lookup_table Opcode_table[] = {
@@ -327,6 +337,7 @@ struct opcode_lookup_table Opcode_table[] = {
 		.type = J_FORMAT,
 		.codes.opcode = 0x02,
 		.mnemonic = "j",
+		.alu_fn = NULL,
 		.describe = "Jump to address",
 	},
 
@@ -334,6 +345,7 @@ struct opcode_lookup_table Opcode_table[] = {
 		.type = J_FORMAT,
 		.codes.opcode = 0x03,
 		.mnemonic = "jal",
+		.alu_fn = NULL,
 		.describe = "Jump and link",
 	},
 
@@ -341,6 +353,7 @@ struct opcode_lookup_table Opcode_table[] = {
 		.type = I_FORMAT,
 		.codes.opcode = 0x04,
 		.mnemonic = "beq",
+		.alu_fn = NULL,
 		.describe = "Branch if equal",
 	},
 
@@ -348,6 +361,7 @@ struct opcode_lookup_table Opcode_table[] = {
 		.type = I_FORMAT,
 		.codes.opcode = 0x05,
 		.mnemonic = "bne",
+		.alu_fn = NULL,
 		.describe = "Branch if not equal",
 	},
 
@@ -411,6 +425,7 @@ struct opcode_lookup_table Opcode_table[] = {
 		.type = R_FORMAT,
 		.codes.opcode = 0x10,
 		.mnemonic = "mfc0",
+		.alu_fn = NULL,
 		.describe = "Move from Coprocessor 0 (no support now)"
 	},
 
@@ -418,42 +433,48 @@ struct opcode_lookup_table Opcode_table[] = {
 		.type = I_FORMAT,
 		.codes.opcode = 0x23,
 		.mnemonic = "lw",
-		.describe = "Load word",
+		.alu_fn = fn_calc_addr_signed,
+		.describe = "Load word(4-byte)",
 	},
 
 	[OP_LBU] = {
 		.type = I_FORMAT,
 		.codes.opcode = 0x024,
 		.mnemonic = "lbu",
-		.describe = "Load byte unsigned",
+		.alu_fn = fn_calc_addr_unsigned,
+		.describe = "Load one byte unsigned",
 	},
 
 	[OP_LHU] = {
 		.type = I_FORMAT,
 		.codes.opcode = 0x025,
 		.mnemonic = "lhu",
-		.describe = "Load halfword unsigned",
+		.alu_fn = fn_calc_addr_unsigned,
+		.describe = "Load halfword(2-byte) unsigned",
 	},
 
 	[OP_SB] = {
 		.type = I_FORMAT,
 		.codes.opcode = 0x28,
 		.mnemonic = "sb",
-		.describe = "Store byte",
+		.alu_fn = fn_calc_addr_signed,
+		.describe = "Store one byte",
 	},
 
 	[OP_SH] = {
 		.type = I_FORMAT,
 		.codes.opcode = 0x29,
 		.mnemonic = "sh",
-		.describe = "Store halfword",
+		.alu_fn = fn_calc_addr_signed,
+		.describe = "Store halfword(2-byte)",
 	},
 
 	[OP_SW] = {
 		.type = I_FORMAT,
 		.codes.opcode = 0x2B,
 		.mnemonic = "sw",
-		.describe = "Store word",
+		.alu_fn = fn_calc_addr_signed,
+		.describe = "Store word(4-byte)",
 	},	
 };
 #endif
