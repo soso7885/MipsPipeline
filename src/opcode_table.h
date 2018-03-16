@@ -5,6 +5,39 @@
 #define I_FORMAT	1
 #define J_FORMAT	2
 
+//XXX: Opmized it, MR. boring!
+#define BELOW_ALU(i) (i == OP_SLL 	|| i == OP_SRL	|| \
+					i == OP_SRA 	|| i == OP_MFHI || \
+					i == OP_MFLO 	|| i == OP_MULT	|| \
+					i == OP_MULTU 	|| i == OP_DIV	|| \
+					i == OP_DIVU	|| i == OP_ADD	|| \
+					i == OP_ADDU	|| i == OP_SUB	|| \
+					i == OP_SUBU	|| i == OP_AND	|| \
+					i == OP_OR		|| i == OP_XOR	|| \
+					i == OP_NOR		|| i == OP_SLT	|| \
+					i == OP_SLTU	|| i == OP_ADDI || \
+					i == OP_ADDIU	|| i == OP_SLTI || \
+					i == OP_SLTIU	|| i == OP_ANDI || \
+					i == OP_ORI		|| i == OP_LUI	|| \
+					i == OP_LW		|| i == OP_LBU	|| \
+					i == OP_LHU 	|| i == OP_SB	|| \
+					i == OP_SB		|| i == OP_SH	|| \
+					i == OP_SW)
+
+#define BELOW_JUMP(i) (i == OP_JR || i == OP_JUMP || i == OP_JAL)
+
+#define BELOW_BRANCH(i) (i == OP_BNE || i == OP_BEQ)
+
+#define LOAD_STORE_DATA_SIZE(i) ((i == OP_LW || i == OP_SW) ? SZ_WORD :	\
+							((i == OP_LHU || i == OP_SH) ? SZ_HALFWORD: SZ_BYTE))
+
+#define GET_MEM_DIRECTION(i) ((i == OP_LW || i == OP_LBU || i == OP_LHU) ? MEM_LOAD : MEM_STORE)
+
+#define BELOW_LOAD_STORE(i) (i == OP_LW	|| i == OP_LBU	|| \
+							i == OP_LHU || i == OP_SB	|| \
+							i == OP_SB	|| i == OP_SH	|| \
+							i == OP_SW)
+
 enum {
 	/*---- R ----*/
 	OP_SLL = 0,

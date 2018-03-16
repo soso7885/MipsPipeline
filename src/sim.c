@@ -4,6 +4,7 @@
 #include <string.h>
 #include <errno.h>
 #include <stdbool.h>
+#include <pthread.h>
 #include <assert.h>
 
 #include "opcode_table.h"
@@ -74,6 +75,7 @@ struct fetch_buffer {
 struct decode_buffer {
 	int type;
 	bool stop;
+	int signal;	// control signal
 	/* 
 	 * In realworld, should use signal to decide which opration in ALU 
 	 * not use optable_index
@@ -96,7 +98,7 @@ struct decode_buffer {
 struct excute_buffer {
 	int type;
 	bool stop;
-	int signal;		// to decide the pipeline path
+	int signal;
 	int sz_access;	// the sizeof data which in memory
 	bool direction;
 	uint8_t rd;		// destination register;
@@ -177,38 +179,31 @@ static int _lookup_opcode(union instruction *inst)
 	return targ;
 }
 
-static inline const char *_get_rs(union instruction *inst)
+static inline const char *_get_rs(int i)
 {
-	for(int i = 0; i < REG_END; ++i){
-		if(inst->r_inst.rs == Mips_registers.reg_table[i].reg_number)
-			return Mips_registers.reg_table[i].reg_name;
-	}
+	if(i > REG_END || i < 0)
+		return "NULL";
 	
-	return "NULL";
+	return Mips_registers.reg_table[i].name;
 }
 
-static inline const char *_get_rt(union instruction *inst)
+static inline const char *_get_rt(int i)
 {
-	for(int i = 0; i < REG_END; ++i){
-		if(inst->r_inst.rt == Mips_registers.reg_table[i].reg_number)
-			return Mips_registers.reg_table[i].reg_name;
-	}
+	if(i > REG_END || i < 0)
+		return "NULL";
 	
-	return "NULL";
+	return Mips_registers.reg_table[i].name;
 }
 
-static inline const char *_get_rd(union instruction *inst)
+static inline const char *_get_rd(int i)
 {
-	for(int i = 0; i < REG_END; ++i){
-		if(inst->r_inst.rd == Mips_registers.reg_table[i].reg_number)
-			return Mips_registers.reg_table[i].reg_name;
-	}
+	if(i > REG_END || i < 0)
+		return "NULL";
 	
-	return "NULL";
+	return Mips_registers.reg_table[i].name;
 }
 
-#define GET_REGNAME(inst, reg) _get_##reg(inst)
-#define GET_REGVAL(i) Mips_registers.reg_table[i].reg_data
+#define GET_REGNAME(inst, reg) _get_##reg((int)inst.r_inst.reg)
 
 /*
  * -- Fetch --
@@ -250,6 +245,9 @@ static void STAGE_fetch(void)
 
 #define COPYDATA_FROM_PREV_STAGE_BUFFER(dest, src, size) memcpy(dest, &pipeline_buf.src, size)
 
+#define GET_REGVAL(i) \
+	(Mips_registers.reg_table[i].state == REG_NEED_UPDATE ? 1 : Mips_registers.reg_table[i].data)
+
 /*
  * -- Decode --
  * 		decode the instruction and grab the data from register
@@ -286,6 +284,9 @@ static void STAGE_decode(void)
 	pIDbuf->optable_index = index;
 
 	printf("<ID> ");
+	
+	pIDbuf->signal = PIPELINE_BYPASS;
+	
 	switch(type){
 		case R_FORMAT:
 			pIDbuf->opcode = copied.inst.r_inst.opcode;
@@ -294,31 +295,44 @@ static void STAGE_decode(void)
 			pIDbuf->rd = copied.inst.r_inst.rd;
 			pIDbuf->shamt = copied.inst.r_inst.shamt;
 			pIDbuf->funct = copied.inst.r_inst.funct;
+			pIDbuf->signal |= PIPELINE_GOTHROW_WB;
 			printf("[R] %s %s %s %s\n",
 						Opcode_table[index].mnemonic,
-						GET_REGNAME(&copied.inst, rd), 
-						GET_REGNAME(&copied.inst, rs),
-						GET_REGNAME(&copied.inst, rt));
+						GET_REGNAME(copied.inst, rd), 
+						GET_REGNAME(copied.inst, rs),
+						GET_REGNAME(copied.inst, rt));
 			break;
 		case I_FORMAT:
+		{
 			pIDbuf->opcode = copied.inst.i_inst.opcode;
 			pIDbuf->rsval = GET_REGVAL(copied.inst.i_inst.rs);
 			pIDbuf->rtval = GET_REGVAL(copied.inst.i_inst.rt);
 			pIDbuf->imm = copied.inst.i_inst.imm;
 			pIDbuf->rd = copied.inst.i_inst.rt;
+			pIDbuf->signal |= PIPELINE_GOTHROW_WB;
+			if(BELOW_LOAD_STORE(index)){
+				pIDbuf->signal |= PIPELINE_GOTHROW_MEM;
+			}
 			printf("[I] %s %s %s, %d\n", 
 						Opcode_table[index].mnemonic, 
-						GET_REGNAME(&copied.inst, rt), 
-						GET_REGNAME(&copied.inst, rs), 
+						GET_REGNAME(copied.inst, rt), 
+						GET_REGNAME(copied.inst, rs), 
 						copied.inst.i_inst.imm);
 			break;
+		}
 		case J_FORMAT:
+		{
 			pIDbuf->opcode = copied.inst.j_inst.opcode;
 			pIDbuf->j_addr = copied.inst.j_inst.addr;
+			if(index == OP_JAL){
+				pIDbuf->signal |= PIPELINE_GOTHROW_WB;
+				pIDbuf->rd = REG_R31;
+			} 
 			printf("[J] %s 0x%0x\n",
 						Opcode_table[index].mnemonic,
 						copied.inst.j_inst.addr);
 			break;
+		}
 	}
 }
 
@@ -336,39 +350,6 @@ static uint32_t ALU(uint32_t in1, uint32_t in2, int index)
 	return ans;
 }
 
-//XXX: Opmized it, MR. boring!
-#define BELOW_ALU(i) (i == OP_SLL 	|| i == OP_SRL	|| \
-					i == OP_SRA 	|| i == OP_MFHI || \
-					i == OP_MFLO 	|| i == OP_MULT	|| \
-					i == OP_MULTU 	|| i == OP_DIV	|| \
-					i == OP_DIVU	|| i == OP_ADD	|| \
-					i == OP_ADDU	|| i == OP_SUB	|| \
-					i == OP_SUBU	|| i == OP_AND	|| \
-					i == OP_OR		|| i == OP_XOR	|| \
-					i == OP_NOR		|| i == OP_SLT	|| \
-					i == OP_SLTU	|| i == OP_ADDI || \
-					i == OP_ADDIU	|| i == OP_SLTI || \
-					i == OP_SLTIU	|| i == OP_ANDI || \
-					i == OP_ORI		|| i == OP_LUI	|| \
-					i == OP_LW		|| i == OP_LBU	|| \
-					i == OP_LHU 	|| i == OP_SB	|| \
-					i == OP_SB		|| i == OP_SH	|| \
-					i == OP_SW)
-
-#define BELOW_JUMP(i) (i == OP_JR || i == OP_JUMP || i == OP_JAL)
-
-#define BELOW_BRANCH(i) (i == OP_BNE || i == OP_BEQ)
-
-/* Load/Store instruction also need ALU */
-#define BELOW_LOAD_STORE(i) (i == OP_LW	|| i == OP_LBU	|| \
-							i == OP_LHU || i == OP_SB	|| \
-							i == OP_SB	|| i == OP_SH	|| \
-							i == OP_SW)
-
-#define LOAD_STORE_DATA_SIZE(i) ((i == OP_LW || i == OP_SW) ? SZ_WORD :	\
-							((i == OP_LHU || i == OP_SH) ? SZ_HALFWORD: SZ_BYTE))
-
-#define GET_MEM_DIRECTION(i) ((i == OP_LW || i == OP_LBU || i == OP_LHU) ? MEM_LOAD : MEM_STORE)
 /*
  * -- Excute --
  * 		ALU, jump or branch
@@ -389,8 +370,6 @@ static void STAGE_excute(void)
 
 	printf("<IE> ");
 
-	// clean signal
-	pIEbuf->signal = PIPELINE_BYPASS;
 	if(BELOW_ALU(copied.optable_index)){	// need ALU
 		uint32_t res;
 
@@ -400,18 +379,16 @@ static void STAGE_excute(void)
 			res = ALU(copied.rsval, copied.imm, copied.optable_index);
 		}
 
-		pIEbuf->signal |= PIPELINE_GOTHROW_WB;
 		pIEbuf->rd = copied.rd;
 
 		/* Load/Store method, need to update memory access address */
 		if(BELOW_LOAD_STORE(copied.optable_index)){
-			pIEbuf->signal |= PIPELINE_GOTHROW_MEM;
 			pIEbuf->mem_addr = res;
 			pIEbuf->sz_access = LOAD_STORE_DATA_SIZE(copied.optable_index);
 			pIEbuf->direction = GET_MEM_DIRECTION(copied.optable_index);
 			/* For store inst, stored the rt val into memory */
 			pIEbuf->result = copied.rtval;
-			printf("do Load/Store memory\n");
+			printf("do Load/Store memory address calculate\n");
 		}else{
 			pIEbuf->result = res;
 			printf("do ALU\n");
@@ -431,8 +408,6 @@ static void STAGE_excute(void)
 			case OP_JAL:
 				jump_targ += (sizeof(union instruction) + copied.j_addr/4);
 				pIEbuf->result = copied.j_addr;
-				pIEbuf->rd = REG_R31;
-				pIEbuf->signal |= PIPELINE_GOTHROW_WB;
 
 				break;
 		}
@@ -455,6 +430,8 @@ static void STAGE_excute(void)
 				Opcode_table[copied.optable_index].describe);
 		// TODO: flushing
 	}
+	
+	pIEbuf->signal = copied.signal;
 }
 
 #define GET_WORD_DUMMY_DATA(addr) (dummy_data[(addr % 7)] & 0xffffffff)
@@ -463,6 +440,14 @@ static void STAGE_excute(void)
 
 #define GET_DUMMY_DATA(addr, size)	\
 	(size == 8 ? GET_WORD_DUMMY_DATA(addr) : (size == 4 ? GET_HALFWORD_DUMMY_DATA(addr) : GET_BYTE_DUMMY_DATA(addr)))
+
+#define SET_WORD_DUMMY_DATA(addr, val) (dummy_data[(addr % 7)] =  val&0xffffffff)
+#define SET_HALFWORD_DUMMY_DATA(addr, val) (dummy_data[(addr % 7)] = val&0x0000ffff)
+#define SET_BYTE_DUMMY_DATA(addr, val) (dummy_data[(addr % 7)] = val&0x000000ff)
+
+#define SET_DUMMY_DATA(addr, val, size)	\
+	(size == 8 ? SET_WORD_DUMMY_DATA(addr, val) : (size == 4 ? SET_HALFWORD_DUMMY_DATA(addr, val) : SET_BYTE_DUMMY_DATA(addr, val)))
+
 
 /*
  * --- Memory access ---
@@ -474,6 +459,7 @@ static void STAGE_memory(void)
 	struct memory_buffer *pMEMbuf = &pipeline_buf.MEMbuf;
 
 	COPYDATA_FROM_PREV_STAGE_BUFFER(&copied, IEbuf, sizeof(copied));
+
 	if(copied.stop){
 		pMEMbuf->stop = true;
 		return;
@@ -497,8 +483,9 @@ static void STAGE_memory(void)
 		ll_add_node(&head, copied.mem_addr, pMEMbuf->result, MEM_LOAD);
 		printf("Load 0x%0x from 0x%0x\n", pMEMbuf->result, copied.mem_addr);
 	}else{	// store
-		ll_add_node(&head, copied.mem_addr, pMEMbuf->result, MEM_STORE);
-		printf("Store 0x%0x to 0x%0x\n", pMEMbuf->result, copied.mem_addr);
+		SET_DUMMY_DATA(copied.mem_addr,copied.result, copied.sz_access);
+		ll_add_node(&head, copied.mem_addr, copied.result, MEM_STORE);
+		printf("Store 0x%0x to 0x%0x\n", copied.result, copied.mem_addr);
 	}
 }
 
@@ -524,22 +511,40 @@ static void STAGE_writeback(void)
 
 	printf("<WB> ");
 	
-	Mips_registers.reg_table[copied.rd].reg_data = copied.result;	
+	Mips_registers.reg_table[copied.rd].data = copied.result;	
 	printf("write %s = 0x%0x\n", 
-		Mips_registers.reg_table[copied.rd].reg_name,
-		Mips_registers.reg_table[copied.rd].reg_data);
+		Mips_registers.reg_table[copied.rd].name,
+		Mips_registers.reg_table[copied.rd].data);
 }
 
 #define DUMP_MEMORY()	ll_show_all(head)
 
 int main(int argc, char **argv)
 {
+	int res;
+	pthread_t tid[5];
+	
 	if(argc < 2){
 		printf("Usage: %s [input file]\n", argv[0]);
 		return -1;
 	}
 
 	parser(argv[1]);
+/*
+	res = pthread_create(&tid[0], NULL, STAGE_fetch, NULL);
+	assert(res);
+	res = pthread_create(&tid[1], NULL, STAGE_decode, NULL);
+	assert(res);
+	res = pthread_create(&tid[2], NULL, STAGE_excute, NULL);
+	assert(res);
+	res = pthread_create(&tid[3], NULL, STAGE_memory, NULL);
+	assert(res);
+	res = pthread_create(&tid[4], NULL, STAGE_writeback, NULL);
+	assert(res);
+
+	for(int i = 0; i < 5; ++i)
+		pthread_join(&tid[i], NULL);	
+*/
 
 	STAGE_fetch();
 	STAGE_decode();
