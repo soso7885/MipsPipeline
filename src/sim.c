@@ -4,7 +4,6 @@
 #include <string.h>
 #include <errno.h>
 #include <stdbool.h>
-#include <pthread.h>
 #include <assert.h>
 
 #include "opcode_table.h"
@@ -39,6 +38,7 @@ struct node *head = NULL;
 
 int nr_inst = 0;
 volatile bool done = false;
+uint32_t forward_pipe;
 
 union instruction {
 	uint32_t raw;
@@ -90,10 +90,6 @@ struct decode_buffer {
 	uint8_t funct;
 	uint32_t j_addr; // jump address
 };
-
-#define SZ_WORD	8
-#define SZ_HALFWORD	4
-#define SZ_BYTE	1
 
 struct excute_buffer {
 	int type;
@@ -246,7 +242,7 @@ static void STAGE_fetch(void)
 #define COPYDATA_FROM_PREV_STAGE_BUFFER(dest, src, size) memcpy(dest, &pipeline_buf.src, size)
 
 #define GET_REGVAL(i) \
-	(Mips_registers.reg_table[i].state == REG_NEED_UPDATE ? 1 : Mips_registers.reg_table[i].data)
+	(Mips_registers.reg_table[i].state == REG_NEED_UPDATE ? forward_pipe : Mips_registers.reg_table[i].data)
 
 /*
  * -- Decode --
@@ -264,10 +260,6 @@ static void STAGE_decode(void)
 		pIDbuf->stop = true;
 		return;
 	}
-	/*
-	 * Do previous pipeline
-	*/
-	STAGE_fetch();
 
 	// start to decode
 	index = _lookup_opcode(&copied.inst);
@@ -296,6 +288,9 @@ static void STAGE_decode(void)
 			pIDbuf->shamt = copied.inst.r_inst.shamt;
 			pIDbuf->funct = copied.inst.r_inst.funct;
 			pIDbuf->signal |= PIPELINE_GOTHROW_WB;
+			
+			Mips_registers.reg_table[pIDbuf->rd].state = REG_NEED_UPDATE;
+
 			printf("[R] %s %s %s %s\n",
 						Opcode_table[index].mnemonic,
 						GET_REGNAME(copied.inst, rd), 
@@ -313,7 +308,10 @@ static void STAGE_decode(void)
 			if(BELOW_LOAD_STORE(index)){
 				pIDbuf->signal |= PIPELINE_GOTHROW_MEM;
 			}
-			printf("[I] %s %s %s, %d\n", 
+	
+			Mips_registers.reg_table[pIDbuf->rd].state = REG_NEED_UPDATE;
+
+			printf("[I] %s %s %s, 0x%0x\n", 
 						Opcode_table[index].mnemonic, 
 						GET_REGNAME(copied.inst, rt), 
 						GET_REGNAME(copied.inst, rs), 
@@ -327,6 +325,7 @@ static void STAGE_decode(void)
 			if(index == OP_JAL){
 				pIDbuf->signal |= PIPELINE_GOTHROW_WB;
 				pIDbuf->rd = REG_R31;
+				Mips_registers.reg_table[pIDbuf->rd].state = REG_NEED_UPDATE;
 			} 
 			printf("[J] %s 0x%0x\n",
 						Opcode_table[index].mnemonic,
@@ -334,6 +333,9 @@ static void STAGE_decode(void)
 			break;
 		}
 	}
+
+	/* Do the previous pipeline */
+	STAGE_fetch();
 }
 
 static uint32_t ALU(uint32_t in1, uint32_t in2, int index)
@@ -360,13 +362,11 @@ static void STAGE_excute(void)
 	struct excute_buffer *pIEbuf = &pipeline_buf.IEbuf;
 
 	COPYDATA_FROM_PREV_STAGE_BUFFER(&copied, IDbuf, sizeof(copied));
+
 	if(copied.stop){
 		pIEbuf->stop = true;
 		return;
 	}
-
-	/* Do previous stage */
-	STAGE_decode();
 
 	printf("<IE> ");
 
@@ -388,11 +388,12 @@ static void STAGE_excute(void)
 			pIEbuf->direction = GET_MEM_DIRECTION(copied.optable_index);
 			/* For store inst, stored the rt val into memory */
 			pIEbuf->result = copied.rtval;
-			printf("do Load/Store memory address calculate\n");
+			printf("ALU: address = 0x%0x\n", res);
 		}else{
 			pIEbuf->result = res;
-			printf("do ALU\n");
+			printf("ALU: res = %d\n", res);
 		}
+		forward_pipe = pIEbuf->result;
 	}else if(BELOW_JUMP(copied.optable_index)){	// Jump method
 		uint32_t jump_targ = Mips_registers.pc;
 
@@ -412,18 +413,18 @@ static void STAGE_excute(void)
 				break;
 		}
 		Mips_registers.pc = jump_targ;	// update PC
-		printf("do jump\n");
+		printf("jump to 0x%0x\n", jump_targ);
 	}else if(BELOW_BRANCH(copied.optable_index)){	// branch method
-		if(copied.optable_index == OP_BEQ){
+		if(copied.optable_index == OP_BEQ){	// beq
 			if(copied.rsval == copied.rtval){
 				Mips_registers.pc += (sizeof(union instruction)+(copied.imm << 2));
 			}
-		}else{
+		}else{	// bne
 			if(copied.rsval != copied.rtval){
 				Mips_registers.pc += (sizeof(union instruction)+(copied.imm << 2));
 			}
 		}
-		printf("do branch\n");
+		printf("branch\n");
 	}else{
 		printf("Sorry, %s (%s) is not support now!\n",
 				Opcode_table[copied.optable_index].mnemonic,
@@ -432,6 +433,9 @@ static void STAGE_excute(void)
 	}
 	
 	pIEbuf->signal = copied.signal;
+
+	/* Do the previous stage */
+	STAGE_decode();
 }
 
 #define GET_WORD_DUMMY_DATA(addr) (dummy_data[(addr % 7)] & 0xffffffff)
@@ -439,15 +443,15 @@ static void STAGE_excute(void)
 #define GET_BYTE_DUMMY_DATA(addr) (dummy_data[(addr % 7)] & 0x000000ff)
 
 #define GET_DUMMY_DATA(addr, size)	\
-	(size == 8 ? GET_WORD_DUMMY_DATA(addr) : (size == 4 ? GET_HALFWORD_DUMMY_DATA(addr) : GET_BYTE_DUMMY_DATA(addr)))
-
+	(size == SZ_WORD ? GET_WORD_DUMMY_DATA(addr) : \
+	(size == SZ_HALFWORD ? GET_HALFWORD_DUMMY_DATA(addr) : GET_BYTE_DUMMY_DATA(addr)))
 #define SET_WORD_DUMMY_DATA(addr, val) (dummy_data[(addr % 7)] =  val&0xffffffff)
 #define SET_HALFWORD_DUMMY_DATA(addr, val) (dummy_data[(addr % 7)] = val&0x0000ffff)
 #define SET_BYTE_DUMMY_DATA(addr, val) (dummy_data[(addr % 7)] = val&0x000000ff)
 
 #define SET_DUMMY_DATA(addr, val, size)	\
-	(size == 8 ? SET_WORD_DUMMY_DATA(addr, val) : (size == 4 ? SET_HALFWORD_DUMMY_DATA(addr, val) : SET_BYTE_DUMMY_DATA(addr, val)))
-
+	(size == SZ_WORD ? SET_WORD_DUMMY_DATA(addr, val) : \
+	(size == SZ_HALFWORD ? SET_HALFWORD_DUMMY_DATA(addr, val) : SET_BYTE_DUMMY_DATA(addr, val)))
 
 /*
  * --- Memory access ---
@@ -465,28 +469,30 @@ static void STAGE_memory(void)
 		return;
 	}
 
-	/* do previous pipeline stage */
+	do{
+		pMEMbuf->type = copied.type;
+		pMEMbuf->signal = copied.signal;
+		pMEMbuf->rd = copied.rd;
+		pMEMbuf->result = copied.result;
+
+		if(!(copied.signal & PIPELINE_GOTHROW_MEM))
+			break;
+
+		printf("<MEM> ");
+
+		if(copied.direction == MEM_LOAD){	// load
+			pMEMbuf->result = GET_DUMMY_DATA(copied.mem_addr, copied.sz_access);
+			ll_add_node(&head, copied.mem_addr, pMEMbuf->result, MEM_LOAD);
+			printf("Load 0x%0x from 0x%0x\n", pMEMbuf->result, copied.mem_addr);
+		}else{	// store
+			SET_DUMMY_DATA(copied.mem_addr,copied.result, copied.sz_access);
+			ll_add_node(&head, copied.mem_addr, copied.result, MEM_STORE);
+			printf("Store 0x%0x to 0x%0x\n", copied.result, copied.mem_addr);
+		}
+	}while(0);
+
+	/* do the previous pipeline stage */
 	STAGE_excute();
-	
-	pMEMbuf->type = copied.type;
-	pMEMbuf->signal = copied.signal;
-	pMEMbuf->rd = copied.rd;
-	pMEMbuf->result = copied.result;
-
-	if(!(copied.signal & PIPELINE_GOTHROW_MEM))
-		return;	
-
-	printf("<MEM> ");
-
-	if(copied.direction == MEM_LOAD){	// load
-		pMEMbuf->result = GET_DUMMY_DATA(copied.mem_addr, copied.sz_access);
-		ll_add_node(&head, copied.mem_addr, pMEMbuf->result, MEM_LOAD);
-		printf("Load 0x%0x from 0x%0x\n", pMEMbuf->result, copied.mem_addr);
-	}else{	// store
-		SET_DUMMY_DATA(copied.mem_addr,copied.result, copied.sz_access);
-		ll_add_node(&head, copied.mem_addr, copied.result, MEM_STORE);
-		printf("Store 0x%0x to 0x%0x\n", copied.result, copied.mem_addr);
-	}
 }
 
 /*
@@ -503,48 +509,36 @@ static void STAGE_writeback(void)
 		done = true;
 		return;
 	}
-	/* do previous pipeline stage */
-	STAGE_memory();
-	
-	if(!(copied.signal & PIPELINE_GOTHROW_WB))
-		return;
 
-	printf("<WB> ");
+	do{
+		if(!(copied.signal & PIPELINE_GOTHROW_WB))
+			break;
+
+		printf("<WB> ");
 	
-	Mips_registers.reg_table[copied.rd].data = copied.result;	
-	printf("write %s = 0x%0x\n", 
-		Mips_registers.reg_table[copied.rd].name,
-		Mips_registers.reg_table[copied.rd].data);
+		Mips_registers.reg_table[copied.rd].data = copied.result;
+		Mips_registers.reg_table[copied.rd].state = REG_INIT; 
+
+		printf("write %s = 0x%0x\n", 
+				Mips_registers.reg_table[copied.rd].name,
+				Mips_registers.reg_table[copied.rd].data);
+	}while(0);
+
+	/* do the previous pipeline stage */
+	STAGE_memory();
 }
 
 #define DUMP_MEMORY()	ll_show_all(head)
+#define DUMP_REGISTER()		register_dump()
 
 int main(int argc, char **argv)
 {
-	int res;
-	pthread_t tid[5];
-	
 	if(argc < 2){
 		printf("Usage: %s [input file]\n", argv[0]);
 		return -1;
 	}
 
 	parser(argv[1]);
-/*
-	res = pthread_create(&tid[0], NULL, STAGE_fetch, NULL);
-	assert(res);
-	res = pthread_create(&tid[1], NULL, STAGE_decode, NULL);
-	assert(res);
-	res = pthread_create(&tid[2], NULL, STAGE_excute, NULL);
-	assert(res);
-	res = pthread_create(&tid[3], NULL, STAGE_memory, NULL);
-	assert(res);
-	res = pthread_create(&tid[4], NULL, STAGE_writeback, NULL);
-	assert(res);
-
-	for(int i = 0; i < 5; ++i)
-		pthread_join(&tid[i], NULL);	
-*/
 
 	STAGE_fetch();
 	STAGE_decode();
@@ -556,7 +550,7 @@ int main(int argc, char **argv)
 		STAGE_writeback();
 
 	DUMP_MEMORY();
-
+	DUMP_REGISTER();
 	ll_free_all_node(head);
 	
 	return 0;

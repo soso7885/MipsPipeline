@@ -5,6 +5,10 @@
 #define I_FORMAT	1
 #define J_FORMAT	2
 
+#define SZ_WORD		4
+#define SZ_HALFWORD	2
+#define SZ_BYTE		1
+
 //XXX: Opmized it, MR. boring!
 #define BELOW_ALU(i) (i == OP_SLL 	|| i == OP_SRL	|| \
 					i == OP_SRA 	|| i == OP_MFHI || \
