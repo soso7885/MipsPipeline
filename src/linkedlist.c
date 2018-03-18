@@ -53,6 +53,8 @@ void ll_add_node(struct node **head, uint32_t addr, uint32_t data, bool ls)
 
 void ll_show_all(struct node *head)
 {
+	if(!head) return;
+
 	printf("\nMemory dump:\n");
 	printf("--------------------------------------------------\n");
 	while(head){

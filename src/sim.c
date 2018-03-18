@@ -4,7 +4,6 @@
 #include <string.h>
 #include <errno.h>
 #include <stdbool.h>
-#include <assert.h>
 
 #include "opcode_table.h"
 #include "register_table.h"
@@ -38,7 +37,10 @@ struct node *head = NULL;
 
 int nr_inst = 0;
 volatile bool done = false;
-uint32_t forward_pipe;
+
+//XXX: bad solution
+uint32_t IE_pipe;
+uint32_t MEM_pipe;
 
 union instruction {
 	uint32_t raw;
@@ -69,12 +71,13 @@ union instruction {
 
 struct fetch_buffer {
 	bool stop;
+	bool stall;
 	union instruction inst;
 };
  
 struct decode_buffer {
-	int type;
 	bool stop;
+	bool stall;
 	int signal;	// control signal
 	/* 
 	 * In realworld, should use signal to decide which opration in ALU 
@@ -82,9 +85,9 @@ struct decode_buffer {
 	*/
 	int optable_index;
 	uint8_t opcode;
-	uint32_t rsval;	
+	uint32_t s1val;
+	uint32_t s2val;
 	uint32_t rtval;
-	uint32_t imm;
 	uint8_t rd;	// destination register;
 	uint8_t shamt;
 	uint8_t funct;
@@ -92,8 +95,8 @@ struct decode_buffer {
 };
 
 struct excute_buffer {
-	int type;
 	bool stop;
+	bool stall;
 	int signal;
 	int sz_access;	// the sizeof data which in memory
 	bool direction;
@@ -103,8 +106,8 @@ struct excute_buffer {
 };
 
 struct memory_buffer {
-	int type;
 	bool stop;
+	bool stall;
 	int signal;
 	uint8_t rd;
 	uint32_t result;
@@ -133,7 +136,10 @@ static void parser(const char *path)
 	FILE *fin;
 	
 	fin = fopen(path, "r");
-	assert(fin);
+	if(!fin){
+		fprintf(stderr, "%s: %s\n", path, strerror(errno));
+		exit(0);
+	}
 
 	while(fgets(tmp, sizeof(tmp), fin)){
 		// to ignore comment
@@ -216,11 +222,17 @@ static void STAGE_fetch(void)
 		return;
 	}
 
+	if(pIFbuf->stall){
+		pIFbuf->stall = false;
+		printf("<IF> stalling\n");
+		return;
+	}
+
 	inst = (union instruction *)&pool[*pc];
 	*pc += sizeof(union instruction);
 	nr_inst--;
 
-	printf("<IF> instruction(%d), ", inst->raw);
+	printf("<IF> instruction(%u), ", inst->raw);
 
 	/* for debug, in real world, fetch will not distinguish the format */
 	if(inst->r_inst.opcode == 0){
@@ -235,15 +247,41 @@ static void STAGE_fetch(void)
 				inst->i_inst.opcode, inst->i_inst.rs,
 				inst->i_inst.rt, inst->i_inst.imm);
 	}
-
+	
 	memcpy(&pIFbuf->inst, inst, sizeof(union instruction));
 }
 
 #define COPYDATA_FROM_PREV_STAGE_BUFFER(dest, src, size) memcpy(dest, &pipeline_buf.src, size)
 
-#define GET_REGVAL(i) \
-	(Mips_registers.reg_table[i].state == REG_NEED_UPDATE ? forward_pipe : Mips_registers.reg_table[i].data)
+#define GET_FROM_REGISTER	0
+#define GET_FROM_IE_PIPE	1
+#define GET_FROM_MEM_PIPE	2
+#define NEED_STALL			3
 
+#define CHECK_STALL(res, i) \
+	if(res == GET_FROM_IE_PIPE) printf("%s forwarding from IE, ", Mips_registers.reg_table[(int)i].name);	\
+	else if(res == GET_FROM_MEM_PIPE) printf("%s forwarding from MEM, ", Mips_registers.reg_table[(int)i].name);	\
+	else if(res == NEED_STALL) break;
+
+static int _get_regval(int i, uint32_t *targ)
+{
+	if(Mips_registers.reg_table[i].state == REG_NEED_UPDATE_FROM_IE){
+		*targ = IE_pipe;
+		return GET_FROM_IE_PIPE;
+	}
+
+	if(Mips_registers.reg_table[i].state == REG_NEED_UPDATE_STALL){
+		*targ = 0;
+		return NEED_STALL;
+	}
+
+	if(Mips_registers.reg_table[i].state == REG_NEED_UPDATE_FROM_MEM){
+		*targ = MEM_pipe;
+		return GET_FROM_MEM_PIPE;
+	}
+	
+	return GET_FROM_REGISTER;
+}
 /*
  * -- Decode --
  * 		decode the instruction and grab the data from register
@@ -269,29 +307,31 @@ static void STAGE_decode(void)
 		return;
 	}
 
-	int type = Opcode_table[index].type;
-	// store into register
-
-	pIDbuf->type = type;
-	pIDbuf->optable_index = index;
-
 	printf("<ID> ");
-	
+
+	int res;
+	int type = Opcode_table[index].type;
+
+	pIDbuf->optable_index = index;
 	pIDbuf->signal = PIPELINE_BYPASS;
 	
 	switch(type){
 		case R_FORMAT:
 			pIDbuf->opcode = copied.inst.r_inst.opcode;
-			pIDbuf->rsval = GET_REGVAL(copied.inst.r_inst.rs);
-			pIDbuf->rtval = GET_REGVAL(copied.inst.r_inst.rt);
 			pIDbuf->rd = copied.inst.r_inst.rd;
 			pIDbuf->shamt = copied.inst.r_inst.shamt;
 			pIDbuf->funct = copied.inst.r_inst.funct;
 			pIDbuf->signal |= PIPELINE_GOTHROW_WB;
-			
-			Mips_registers.reg_table[pIDbuf->rd].state = REG_NEED_UPDATE;
-
-			printf("[R] %s %s %s %s\n",
+			res = _get_regval((int)copied.inst.r_inst.rs, &pIDbuf->s1val);
+			CHECK_STALL(res, copied.inst.r_inst.rs);
+			res = _get_regval((int)copied.inst.r_inst.rt, &pIDbuf->s2val);
+			CHECK_STALL(res, copied.inst.r_inst.rt);
+			/* 
+			 * For R type instruction, using forwarding data from
+			 * IE, so mark the destation register state to NEED_UPDATE_FROM_IE 
+			*/	
+			Mips_registers.reg_table[pIDbuf->rd].state = REG_NEED_UPDATE_FROM_IE;
+			printf("[R] %s %s %s %s",
 						Opcode_table[index].mnemonic,
 						GET_REGNAME(copied.inst, rd), 
 						GET_REGNAME(copied.inst, rs),
@@ -300,22 +340,39 @@ static void STAGE_decode(void)
 		case I_FORMAT:
 		{
 			pIDbuf->opcode = copied.inst.i_inst.opcode;
-			pIDbuf->rsval = GET_REGVAL(copied.inst.i_inst.rs);
-			pIDbuf->rtval = GET_REGVAL(copied.inst.i_inst.rt);
-			pIDbuf->imm = copied.inst.i_inst.imm;
+			res = _get_regval((int)copied.inst.i_inst.rs, &pIDbuf->s1val);
+			CHECK_STALL(res, copied.inst.i_inst.rs);
+			pIDbuf->s2val = copied.inst.i_inst.imm;
 			pIDbuf->rd = copied.inst.i_inst.rt;
 			pIDbuf->signal |= PIPELINE_GOTHROW_WB;
-			if(BELOW_LOAD_STORE(index)){
-				pIDbuf->signal |= PIPELINE_GOTHROW_MEM;
-			}
-	
-			Mips_registers.reg_table[pIDbuf->rd].state = REG_NEED_UPDATE;
 
-			printf("[I] %s %s %s, 0x%0x\n", 
-						Opcode_table[index].mnemonic, 
-						GET_REGNAME(copied.inst, rt), 
-						GET_REGNAME(copied.inst, rs), 
-						copied.inst.i_inst.imm);
+			/* load/store instruction specific */
+			if(BELOW_LOAD_STORE(index)){
+				res = _get_regval((int)copied.inst.i_inst.rt, &pIDbuf->s2val);
+				CHECK_STALL(res, copied.inst.i_inst.rt);
+				pIDbuf->signal |= PIPELINE_GOTHROW_MEM;
+				/* 
+				 * For load/store instruction, need stalling 1 stage,
+				 * somark the destation register state to NEED_UPDATE_STALL 
+				*/
+				Mips_registers.reg_table[pIDbuf->rd].state = REG_NEED_UPDATE_STALL;
+				printf("[I] %s %s, %u(%s)", 
+								Opcode_table[index].mnemonic, 
+								GET_REGNAME(copied.inst, rt),
+								copied.inst.i_inst.imm,
+								GET_REGNAME(copied.inst, rs));
+			}else{
+				/* 
+				 * For I type instruction, using forwarding data from IE,
+				 * so mark the destation register state to NEED_UPDATE_FROM_IE
+				*/
+				Mips_registers.reg_table[pIDbuf->rd].state = REG_NEED_UPDATE_FROM_IE;
+				printf("[I] %s %s %s, %u", 
+								Opcode_table[index].mnemonic, 
+								GET_REGNAME(copied.inst, rt), 
+								GET_REGNAME(copied.inst, rs), 
+								copied.inst.i_inst.imm);
+			}
 			break;
 		}
 		case J_FORMAT:
@@ -325,14 +382,22 @@ static void STAGE_decode(void)
 			if(index == OP_JAL){
 				pIDbuf->signal |= PIPELINE_GOTHROW_WB;
 				pIDbuf->rd = REG_R31;
-				Mips_registers.reg_table[pIDbuf->rd].state = REG_NEED_UPDATE;
-			} 
-			printf("[J] %s 0x%0x\n",
+				Mips_registers.reg_table[pIDbuf->rd].state = REG_NEED_UPDATE_FROM_IE;
+			}
+			printf("[J] %s 0x%0x",
 						Opcode_table[index].mnemonic,
 						copied.inst.j_inst.addr);
 			break;
 		}
 	}
+
+	if(res == NEED_STALL){
+		printf("stalling");
+		pIDbuf->stall = true;
+		pipeline_buf.IFbuf.stall = true;
+	}
+
+	printf("\n");
 
 	/* Do the previous pipeline */
 	STAGE_fetch();
@@ -345,8 +410,9 @@ static uint32_t ALU(uint32_t in1, uint32_t in2, int index)
 	if(Opcode_table[index].alu_fn){
 		Opcode_table[index].alu_fn(&ans, in1, in2);
 	}else{
-		printf("Sorry, %s is not support yet!\n",
+		printf("\n\nSorry, %s is not support yet!\n\n",
 					Opcode_table[index].mnemonic);
+		exit(0);
 	}
 	
 	return ans;
@@ -370,70 +436,69 @@ static void STAGE_excute(void)
 
 	printf("<IE> ");
 
-	if(BELOW_ALU(copied.optable_index)){	// need ALU
-		uint32_t res;
-
-		if(copied.type == R_FORMAT){
-			res = ALU(copied.rsval, copied.rtval, copied.optable_index);
-		}else{
-			res = ALU(copied.rsval, copied.imm, copied.optable_index);
+	do{
+		if(copied.stall){
+			printf("stalling\n");
+			pIEbuf->stall = true;
+			pipeline_buf.IDbuf.stall = false;
+			break;
 		}
 
-		pIEbuf->rd = copied.rd;
-
-		/* Load/Store method, need to update memory access address */
-		if(BELOW_LOAD_STORE(copied.optable_index)){
-			pIEbuf->mem_addr = res;
-			pIEbuf->sz_access = LOAD_STORE_DATA_SIZE(copied.optable_index);
-			pIEbuf->direction = GET_MEM_DIRECTION(copied.optable_index);
-			/* For store inst, stored the rt val into memory */
-			pIEbuf->result = copied.rtval;
-			printf("ALU: address = 0x%0x\n", res);
-		}else{
-			pIEbuf->result = res;
-			printf("ALU: res = %d\n", res);
-		}
-		forward_pipe = pIEbuf->result;
-	}else if(BELOW_JUMP(copied.optable_index)){	// Jump method
-		uint32_t jump_targ = Mips_registers.pc;
-
-		switch(copied.optable_index){
-			case OP_JR:
-				jump_targ = copied.rsval;
-				
-				break;
-			case OP_JUMP:
-				jump_targ += (sizeof(union instruction) + copied.j_addr/4);
-
-				break;
-			case OP_JAL:
-				jump_targ += (sizeof(union instruction) + copied.j_addr/4);
-				pIEbuf->result = copied.j_addr;
-
-				break;
-		}
-		Mips_registers.pc = jump_targ;	// update PC
-		printf("jump to 0x%0x\n", jump_targ);
-	}else if(BELOW_BRANCH(copied.optable_index)){	// branch method
-		if(copied.optable_index == OP_BEQ){	// beq
-			if(copied.rsval == copied.rtval){
-				Mips_registers.pc += (sizeof(union instruction)+(copied.imm << 2));
-			}
-		}else{	// bne
-			if(copied.rsval != copied.rtval){
-				Mips_registers.pc += (sizeof(union instruction)+(copied.imm << 2));
-			}
-		}
-		printf("branch\n");
-	}else{
-		printf("Sorry, %s (%s) is not support now!\n",
-				Opcode_table[copied.optable_index].mnemonic,
-				Opcode_table[copied.optable_index].describe);
-		// TODO: flushing
-	}
+		if(BELOW_ALU(copied.optable_index)){	// need ALU
+			uint32_t res = ALU(copied.s1val, copied.s2val, copied.optable_index);
 	
-	pIEbuf->signal = copied.signal;
+			pIEbuf->rd = copied.rd;
+			/* Load/Store method, need to update memory access address */
+			if(BELOW_LOAD_STORE(copied.optable_index)){
+				pIEbuf->mem_addr = res;
+				pIEbuf->sz_access = LOAD_STORE_DATA_SIZE(copied.optable_index);
+				pIEbuf->direction = GET_MEM_DIRECTION(copied.optable_index);
+				/* For store inst, stored the rt val into memory */
+				pIEbuf->result = copied.rtval;
+				printf("ALU: address = 0x%0x\n", res);
+			}else{
+				pIEbuf->result = res;
+				printf("ALU: res = %u\n", res);
+				IE_pipe = pIEbuf->result;	// forwarding data
+			}
+		}else if(BELOW_JUMP(copied.optable_index)){	// Jump method
+			uint32_t jump_targ = Mips_registers.pc;
 
+			switch(copied.optable_index){
+				case OP_JR:
+					jump_targ = copied.s1val;
+					break;
+				case OP_JUMP:
+					jump_targ += (sizeof(union instruction) + copied.j_addr/4);
+					break;
+				case OP_JAL:
+					jump_targ += (sizeof(union instruction) + copied.j_addr/4);
+					pIEbuf->result = copied.j_addr;
+					break;
+			}
+			Mips_registers.pc = jump_targ;	// update PC
+			printf("jump to 0x%0x\n", jump_targ);
+		}else if(BELOW_BRANCH(copied.optable_index)){	// branch method
+			if(copied.optable_index == OP_BEQ){	// beq
+				if(copied.s1val == copied.rtval){
+					Mips_registers.pc += (sizeof(union instruction)+(copied.s2val << 2));
+				}
+			}else{	// bne
+				if(copied.s1val != copied.rtval){
+					Mips_registers.pc += (sizeof(union instruction)+(copied.s2val << 2));
+				}
+			}
+			printf("branch\n");
+		}else{
+			printf("Sorry, %s (%s) is not support now!\n",
+					Opcode_table[copied.optable_index].mnemonic,
+					Opcode_table[copied.optable_index].describe);
+			// TODO: flushing
+		}
+	
+		pIEbuf->signal = copied.signal;
+	}while(0);
+	
 	/* Do the previous stage */
 	STAGE_decode();
 }
@@ -461,7 +526,7 @@ static void STAGE_memory(void)
 {
 	struct excute_buffer copied;
 	struct memory_buffer *pMEMbuf = &pipeline_buf.MEMbuf;
-
+	
 	COPYDATA_FROM_PREV_STAGE_BUFFER(&copied, IEbuf, sizeof(copied));
 
 	if(copied.stop){
@@ -470,20 +535,30 @@ static void STAGE_memory(void)
 	}
 
 	do{
-		pMEMbuf->type = copied.type;
+		printf("<MEM> ");
+
+		if(copied.stall){
+			printf("stalling\n");
+			pipeline_buf.IEbuf.stall = false;
+			pMEMbuf->stall = true;
+			break;
+		}
+
 		pMEMbuf->signal = copied.signal;
 		pMEMbuf->rd = copied.rd;
 		pMEMbuf->result = copied.result;
 
-		if(!(copied.signal & PIPELINE_GOTHROW_MEM))
+		if(!(copied.signal & PIPELINE_GOTHROW_MEM)){
+			printf("do nothing\n");
 			break;
-
-		printf("<MEM> ");
+		}
 
 		if(copied.direction == MEM_LOAD){	// load
 			pMEMbuf->result = GET_DUMMY_DATA(copied.mem_addr, copied.sz_access);
+			MEM_pipe = pMEMbuf->result;	// forwarding data
 			ll_add_node(&head, copied.mem_addr, pMEMbuf->result, MEM_LOAD);
 			printf("Load 0x%0x from 0x%0x\n", pMEMbuf->result, copied.mem_addr);
+			Mips_registers.reg_table[copied.rd].state = REG_NEED_UPDATE_FROM_MEM;
 		}else{	// store
 			SET_DUMMY_DATA(copied.mem_addr,copied.result, copied.sz_access);
 			ll_add_node(&head, copied.mem_addr, copied.result, MEM_STORE);
@@ -510,11 +585,19 @@ static void STAGE_writeback(void)
 		return;
 	}
 
-	do{
-		if(!(copied.signal & PIPELINE_GOTHROW_WB))
-			break;
+	printf("<WB> ");
 
-		printf("<WB> ");
+	do{
+		if(copied.stall){
+			printf("stalling\n");
+			pipeline_buf.MEMbuf.stall = false;
+			break;
+		}
+
+		if(!(copied.signal & PIPELINE_GOTHROW_WB)){
+			printf("do nothing\n");
+			break;
+		}
 	
 		Mips_registers.reg_table[copied.rd].data = copied.result;
 		Mips_registers.reg_table[copied.rd].state = REG_INIT; 
@@ -523,13 +606,14 @@ static void STAGE_writeback(void)
 				Mips_registers.reg_table[copied.rd].name,
 				Mips_registers.reg_table[copied.rd].data);
 	}while(0);
-
+	
 	/* do the previous pipeline stage */
 	STAGE_memory();
 }
 
 #define DUMP_MEMORY()	ll_show_all(head)
-#define DUMP_REGISTER()		register_dump()
+#define DUMP_REGISTER()	register_dump()
+#define FREE_DUMP()		ll_free_all_node(head);
 
 int main(int argc, char **argv)
 {
@@ -541,17 +625,24 @@ int main(int argc, char **argv)
 	parser(argv[1]);
 
 	STAGE_fetch();
+	printf("\n");
 	STAGE_decode();
+	printf("\n");
 	STAGE_excute();
+	printf("\n");
 	STAGE_memory();
+	printf("\n");
 	STAGE_writeback();
-	
-	while(!done)
+	printf("\n");
+	while(!done){
 		STAGE_writeback();
+		printf("\n");
+	}
 
 	DUMP_MEMORY();
 	DUMP_REGISTER();
-	ll_free_all_node(head);
+	
+	FREE_DUMP();
 	
 	return 0;
 }

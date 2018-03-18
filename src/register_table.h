@@ -3,8 +3,10 @@
 
 #include <stdio.h>
 
-#define REG_INIT	0
-#define REG_NEED_UPDATE	1
+#define REG_INIT					0
+#define REG_NEED_UPDATE_FROM_IE		1
+#define REG_NEED_UPDATE_STALL		2
+#define REG_NEED_UPDATE_FROM_MEM	3
 
 enum {
 	REG_R0 = 0, 
