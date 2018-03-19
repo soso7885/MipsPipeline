@@ -297,13 +297,27 @@ struct _mips_registers Mips_registers = {
 
 static inline void register_dump(void)
 {
-	printf("\nRegister dump:\n");
-	printf("--------------------------------------------------\n");
-	for(int i = 0; i < REG_END; ++i){
-		printf("%s(%s): 0x%0x\n", Mips_registers.reg_table[i].name,
-							Mips_registers.reg_table[i].alias,
-							Mips_registers.reg_table[i].data);
+	printf("Register dump:\n");
+	printf("---------------------------------------------------------------------\n");
+	for(int i = 0; i < REG_END; i+=4){
+		printf("%s(%s): 0x%0x\t",
+					Mips_registers.reg_table[i].name,
+					Mips_registers.reg_table[i].alias,
+					Mips_registers.reg_table[i].data);
+		printf("%s(%s): 0x%0x\t",
+					Mips_registers.reg_table[i+1].name,
+					Mips_registers.reg_table[i+1].alias,
+					Mips_registers.reg_table[i+1].data);
+		printf("%s(%s): 0x%0x\t",
+					Mips_registers.reg_table[i+2].name,
+					Mips_registers.reg_table[i+2].alias,
+					Mips_registers.reg_table[i+2].data);
+		printf("%s(%s): 0x%0x\n",
+					Mips_registers.reg_table[i+3].name,
+					Mips_registers.reg_table[i+3].alias,
+					Mips_registers.reg_table[i+3].data);
+
 	}
-	printf("--------------------------------------------------\n");
+	printf("---------------------------------------------------------------------\n");
 }
 #endif

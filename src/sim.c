@@ -36,6 +36,7 @@ uint8_t pool[POOLSIZE] = {0};
 struct node *head = NULL;
 
 int nr_inst = 0;
+int clock = 0;
 volatile bool done = false;
 
 //XXX: bad solution
@@ -615,6 +616,15 @@ static void STAGE_writeback(void)
 #define DUMP_REGISTER()	register_dump()
 #define FREE_DUMP()		ll_free_all_node(head);
 
+#define CLOCK_CYCLE()	\
+do{\
+	if(done) break;	\
+	printf("\n=== Clock cycle %d: ===\n", ++clock);\
+	DUMP_MEMORY();	\
+	DUMP_REGISTER();	\
+	printf("\n");	\
+}while(0);
+
 int main(int argc, char **argv)
 {
 	if(argc < 2){
@@ -625,23 +635,20 @@ int main(int argc, char **argv)
 	parser(argv[1]);
 
 	STAGE_fetch();
-	printf("\n");
+	CLOCK_CYCLE();
 	STAGE_decode();
-	printf("\n");
+	CLOCK_CYCLE();
 	STAGE_excute();
-	printf("\n");
+	CLOCK_CYCLE();
 	STAGE_memory();
-	printf("\n");
+	CLOCK_CYCLE();
 	STAGE_writeback();
-	printf("\n");
+	CLOCK_CYCLE();
 	while(!done){
 		STAGE_writeback();
-		printf("\n");
+		CLOCK_CYCLE();
 	}
 
-	DUMP_MEMORY();
-	DUMP_REGISTER();
-	
 	FREE_DUMP();
 	
 	return 0;

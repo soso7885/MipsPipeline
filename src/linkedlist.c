@@ -55,15 +55,15 @@ void ll_show_all(struct node *head)
 {
 	if(!head) return;
 
-	printf("\nMemory dump:\n");
-	printf("--------------------------------------------------\n");
+	printf("Memory dump:\n");
+	printf("---------------------------------------------------------------------\n");
 	while(head){
 		printf("%s:\taddress 0x%0x\tdata 0x%0x\n",
 			(head->ls == MEM_LOAD ? "Load memory" : "Store memory"),
 			head->addr, head->data);
 		head = head->next;
 	}
-	printf("--------------------------------------------------\n");
+	printf("---------------------------------------------------------------------\n");
 }
 
 void ll_free_node(struct node **head, uint32_t addr)
