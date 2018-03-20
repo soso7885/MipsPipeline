@@ -35,7 +35,6 @@ uint8_t pool[POOLSIZE] = {0};
 /* The memory dump linkedlist */
 struct node *head = NULL;
 
-int nr_inst = 0;
 int clock = 0;
 volatile bool done = false;
 
@@ -73,12 +72,14 @@ union instruction {
 struct fetch_buffer {
 	bool stop;
 	bool stall;
+	bool flush;
 	union instruction inst;
 };
  
 struct decode_buffer {
 	bool stop;
 	bool stall;
+	bool flush;
 	int signal;	// control signal
 	/* 
 	 * In realworld, should use signal to decide which opration in ALU 
@@ -98,6 +99,7 @@ struct decode_buffer {
 struct excute_buffer {
 	bool stop;
 	bool stall;
+	bool flush;
 	int signal;
 	int sz_access;	// the sizeof data which in memory
 	bool direction;
@@ -109,6 +111,7 @@ struct excute_buffer {
 struct memory_buffer {
 	bool stop;
 	bool stall;
+	bool flush;
 	int signal;
 	uint8_t rd;
 	uint32_t result;
@@ -132,6 +135,7 @@ static void _ignore_comment(char *buf, size_t buflen, FILE **fp)
 
 static void parser(const char *path)
 {
+	int ret = 0;
 	uint32_t *inst;
 	char tmp[32] = {0};
 	FILE *fin;
@@ -150,10 +154,10 @@ static void parser(const char *path)
 			continue;
 		}
 
-		inst = (uint32_t *)&pool[(nr_inst*sizeof(uint32_t))];
+		inst = (uint32_t *)&pool[(ret*sizeof(uint32_t))];
 		sscanf(tmp, "%u", inst);
 		memset(tmp, 0, sizeof(tmp));
-		nr_inst++;
+		ret++;
 	}
 
 	fclose(fin);
@@ -214,12 +218,13 @@ static inline const char *_get_rd(int i)
 */
 static void STAGE_fetch(void)
 {
+	uint32_t end = 0xffffffff;
 	union instruction *inst;
 	struct fetch_buffer *pIFbuf = &pipeline_buf.IFbuf;
 	uint32_t *pc = &Mips_registers.pc;
 
-	if(nr_inst == 0){
-		pIFbuf->stop = true;
+	if(pIFbuf->flush){
+		printf("<IF> flushing\n");
 		return;
 	}
 
@@ -230,9 +235,12 @@ static void STAGE_fetch(void)
 	}
 
 	inst = (union instruction *)&pool[*pc];
-	*pc += sizeof(union instruction);
-	nr_inst--;
+	if(inst->raw == end){
+		pIFbuf->stop = true;
+		return;
+	}
 
+	*pc += sizeof(union instruction);
 	printf("<IF> instruction(%u), ", inst->raw);
 
 	/* for debug, in real world, fetch will not distinguish the format */
@@ -300,6 +308,14 @@ static void STAGE_decode(void)
 		return;
 	}
 
+	if(copied.flush){
+		pipeline_buf.IFbuf.flush = false;
+		pIDbuf->flush = true;
+		goto out;
+	}
+
+	printf("<ID> ");
+
 	// start to decode
 	index = _lookup_opcode(&copied.inst);
 	if(index == OP_END){
@@ -307,8 +323,6 @@ static void STAGE_decode(void)
 						__func__, copied.inst.raw);
 		return;
 	}
-
-	printf("<ID> ");
 
 	int res;
 	int type = Opcode_table[index].type;
@@ -345,13 +359,12 @@ static void STAGE_decode(void)
 			CHECK_STALL(res, copied.inst.i_inst.rs);
 			pIDbuf->s2val = copied.inst.i_inst.imm;
 			pIDbuf->rd = copied.inst.i_inst.rt;
-			pIDbuf->signal |= PIPELINE_GOTHROW_WB;
 
 			/* load/store instruction specific */
 			if(BELOW_LOAD_STORE(index)){
-				res = _get_regval((int)copied.inst.i_inst.rt, &pIDbuf->s2val);
+				res = _get_regval((int)copied.inst.i_inst.rt, &pIDbuf->rtval);
 				CHECK_STALL(res, copied.inst.i_inst.rt);
-				pIDbuf->signal |= PIPELINE_GOTHROW_MEM;
+				pIDbuf->signal |= (PIPELINE_GOTHROW_MEM | PIPELINE_GOTHROW_WB);
 				/* 
 				 * For load/store instruction, need stalling 1 stage,
 				 * somark the destation register state to NEED_UPDATE_STALL 
@@ -362,7 +375,17 @@ static void STAGE_decode(void)
 								GET_REGNAME(copied.inst, rt),
 								copied.inst.i_inst.imm,
 								GET_REGNAME(copied.inst, rs));
+			}else if(BELOW_BRANCH(index)){
+				res = _get_regval((int)copied.inst.i_inst.rt, &pIDbuf->rtval);
+				CHECK_STALL(res, copied.inst.i_inst.rt);
+				pipeline_buf.IFbuf.flush = true;	// IF flushing
+				printf("[I] %s %s %s, %u", 
+								Opcode_table[index].mnemonic, 
+								GET_REGNAME(copied.inst, rt), 
+								GET_REGNAME(copied.inst, rs), 
+								copied.inst.i_inst.imm);
 			}else{
+				pIDbuf->signal |= PIPELINE_GOTHROW_WB;
 				/* 
 				 * For I type instruction, using forwarding data from IE,
 				 * so mark the destation register state to NEED_UPDATE_FROM_IE
@@ -399,7 +422,7 @@ static void STAGE_decode(void)
 	}
 
 	printf("\n");
-
+out:
 	/* Do the previous pipeline */
 	STAGE_fetch();
 }
@@ -435,9 +458,15 @@ static void STAGE_excute(void)
 		return;
 	}
 
-	printf("<IE> ");
-
 	do{
+		if(copied.flush){
+			pipeline_buf.IDbuf.flush = false;
+			pIEbuf->flush = true;
+			break;
+		}
+
+		printf("<IE> ");
+
 		if(copied.stall){
 			printf("stalling\n");
 			pIEbuf->stall = true;
@@ -482,21 +511,26 @@ static void STAGE_excute(void)
 		}else if(BELOW_BRANCH(copied.optable_index)){	// branch method
 			if(copied.optable_index == OP_BEQ){	// beq
 				if(copied.s1val == copied.rtval){
-					Mips_registers.pc += (sizeof(union instruction)+(copied.s2val << 2));
+			//		Mips_registers.pc += (sizeof(union instruction)+(copied.s2val << 2));
+					Mips_registers.pc = 8;
+					printf("BEQ holds, pc = %d\n", Mips_registers.pc);
+				}else{
+					printf("BEQ not holds\n");
 				}
 			}else{	// bne
 				if(copied.s1val != copied.rtval){
 					Mips_registers.pc += (sizeof(union instruction)+(copied.s2val << 2));
+					printf("BNE holds, pc = %d\n", Mips_registers.pc);
+				}else{
+					printf("BNE not holds\n");
 				}
 			}
-			printf("branch\n");
 		}else{
 			printf("Sorry, %s (%s) is not support now!\n",
 					Opcode_table[copied.optable_index].mnemonic,
 					Opcode_table[copied.optable_index].describe);
 			// TODO: flushing
 		}
-	
 		pIEbuf->signal = copied.signal;
 	}while(0);
 	
@@ -536,6 +570,12 @@ static void STAGE_memory(void)
 	}
 
 	do{
+		if(copied.flush){
+			pipeline_buf.IEbuf.flush = false;
+			pMEMbuf->flush = true;
+			break;
+		}
+
 		printf("<MEM> ");
 
 		if(copied.stall){
@@ -586,9 +626,14 @@ static void STAGE_writeback(void)
 		return;
 	}
 
-	printf("<WB> ");
-
 	do{
+		if(copied.flush){
+			pipeline_buf.MEMbuf.flush = false;
+			break;
+		}
+
+		printf("<WB> ");
+
 		if(copied.stall){
 			printf("stalling\n");
 			pipeline_buf.MEMbuf.stall = false;
@@ -616,6 +661,7 @@ static void STAGE_writeback(void)
 #define DUMP_REGISTER()	register_dump()
 #define FREE_DUMP()		ll_free_all_node(head);
 
+#if 1
 #define CLOCK_CYCLE()	\
 do{\
 	if(done) break;	\
@@ -624,6 +670,13 @@ do{\
 	DUMP_REGISTER();	\
 	printf("\n");	\
 }while(0);
+#else
+#define CLOCK_CYCLE()	\
+do{\
+	if(done) break;	\
+	printf("\n");	\
+}while(0);
+#endif
 
 int main(int argc, char **argv)
 {
@@ -631,6 +684,8 @@ int main(int argc, char **argv)
 		printf("Usage: %s [input file]\n", argv[0]);
 		return -1;
 	}
+
+	memset(&pool, 0xff, sizeof(pool));
 
 	parser(argv[1]);
 

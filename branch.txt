@@ -1,0 +1,32 @@
+#
+# for convert assembly to binary, please use the online tool:
+# http://www.kurtm.net/mipsasm/index.cgi
+#
+
+# beq $7 $0, 10
+283115521
+# addi $4 $2, 13
+541327373
+2353070090
+
+
+#IF  ID  IE  MEM  WB
+#    IFx IF  ID   IE  MEM  WB
+
+# <IF> instruction(283115521), I-type: opcode(4) rs(7) rt(0) imm(1)
+
+#<ID> [I] beq $zero $a3, 1
+#<IF> flushing
+
+#<IE> BEQ holds, pc = 8
+#<IF> instruction(2353070090), I-type: opcode(23) rs(2) rt(1) imm(a)
+
+#<MEM> do nothing
+#<ID> [I] lw $at, 10($v0)
+
+#<WB> do nothing
+#<IE> ALU: address = 0xa
+
+#<MEM> Load 0x400950 from 0xa
+
+#<WB> write $at = 0x400950
