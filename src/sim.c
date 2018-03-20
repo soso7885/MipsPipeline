@@ -538,16 +538,16 @@ static void STAGE_excute(void)
 	STAGE_decode();
 }
 
-#define GET_WORD_DUMMY_DATA(addr) (dummy_data[(addr % 7)] & 0xffffffff)
-#define GET_HALFWORD_DUMMY_DATA(addr) (dummy_data[(addr % 7)] & 0x0000ffff)
-#define GET_BYTE_DUMMY_DATA(addr) (dummy_data[(addr % 7)] & 0x000000ff)
+#define GET_WORD_DUMMY_DATA(addr) (dummy_data[(addr % 8)] & 0xffffffff)
+#define GET_HALFWORD_DUMMY_DATA(addr) (dummy_data[(addr % 8)] & 0x0000ffff)
+#define GET_BYTE_DUMMY_DATA(addr) (dummy_data[(addr % 8)] & 0x000000ff)
 
 #define GET_DUMMY_DATA(addr, size)	\
 	(size == SZ_WORD ? GET_WORD_DUMMY_DATA(addr) : \
 	(size == SZ_HALFWORD ? GET_HALFWORD_DUMMY_DATA(addr) : GET_BYTE_DUMMY_DATA(addr)))
-#define SET_WORD_DUMMY_DATA(addr, val) (dummy_data[(addr % 7)] =  val&0xffffffff)
-#define SET_HALFWORD_DUMMY_DATA(addr, val) (dummy_data[(addr % 7)] = val&0x0000ffff)
-#define SET_BYTE_DUMMY_DATA(addr, val) (dummy_data[(addr % 7)] = val&0x000000ff)
+#define SET_WORD_DUMMY_DATA(addr, val) (dummy_data[(addr % 8)] =  val&0xffffffff)
+#define SET_HALFWORD_DUMMY_DATA(addr, val) (dummy_data[(addr % 8)] = val&0x0000ffff)
+#define SET_BYTE_DUMMY_DATA(addr, val) (dummy_data[(addr % 8)] = val&0x000000ff)
 
 #define SET_DUMMY_DATA(addr, val, size)	\
 	(size == SZ_WORD ? SET_WORD_DUMMY_DATA(addr, val) : \
