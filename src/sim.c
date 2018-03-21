@@ -18,6 +18,7 @@
 /*
  * Get the function address to be the data
 */
+/*
 uint64_t dummy_data[] = {
 	(uint64_t)&exit,
 	(uint64_t)&scanf,
@@ -27,6 +28,28 @@ uint64_t dummy_data[] = {
 	(uint64_t)&fgetc,
 	(uint64_t)&perror,
 	(uint64_t)&fflush,
+};
+*/
+
+uint32_t dummy_data[] = {
+	0x00,
+	0x01,
+	0x02,
+	0x04,
+	0x08,
+	0x05,
+	0x05,
+	0x06,
+	0x04,
+/* ---------------------------*/
+	0x02,
+	0x03,
+	0x04,
+	0x0A,
+	0x07,
+	0x07,
+	0x08,
+	0x04
 };
 
 //XXX: use linkedlist to implement it, MR. Boring
@@ -268,8 +291,8 @@ static void STAGE_fetch(void)
 #define NEED_STALL			3
 
 #define CHECK_STALL(res, i) \
-	if(res == GET_FROM_IE_PIPE) printf("%s forwarding from IE, ", Mips_registers.reg_table[(int)i].name);	\
-	else if(res == GET_FROM_MEM_PIPE) printf("%s forwarding from MEM, ", Mips_registers.reg_table[(int)i].name);	\
+	if(res == GET_FROM_IE_PIPE) printf("%s(%d) forwarding from IE, ", Mips_registers.reg_table[(int)i].name, IE_pipe);	\
+	else if(res == GET_FROM_MEM_PIPE) printf("%s(%d) forwarding from MEM, ", Mips_registers.reg_table[(int)i].name, MEM_pipe);	\
 	else if(res == NEED_STALL) break;
 
 static int _get_regval(int i, uint32_t *targ)
@@ -341,11 +364,11 @@ static void STAGE_decode(void)
 			CHECK_STALL(res, copied.inst.r_inst.rs);
 			res = _get_regval((int)copied.inst.r_inst.rt, &pIDbuf->s2val);
 			CHECK_STALL(res, copied.inst.r_inst.rt);
+			Mips_registers.reg_table[pIDbuf->rd].state = REG_NEED_UPDATE_FROM_IE;
 			/* 
 			 * For R type instruction, using forwarding data from
 			 * IE, so mark the destation register state to NEED_UPDATE_FROM_IE 
 			*/	
-			Mips_registers.reg_table[pIDbuf->rd].state = REG_NEED_UPDATE_FROM_IE;
 			printf("[R] %s %s %s %s",
 						Opcode_table[index].mnemonic,
 						GET_REGNAME(copied.inst, rd), 
@@ -365,11 +388,11 @@ static void STAGE_decode(void)
 				res = _get_regval((int)copied.inst.i_inst.rt, &pIDbuf->rtval);
 				CHECK_STALL(res, copied.inst.i_inst.rt);
 				pIDbuf->signal |= (PIPELINE_GOTHROW_MEM | PIPELINE_GOTHROW_WB);
+				Mips_registers.reg_table[pIDbuf->rd].state = REG_NEED_UPDATE_FROM_IE;
 				/* 
 				 * For load/store instruction, need stalling 1 stage,
 				 * somark the destation register state to NEED_UPDATE_STALL 
 				*/
-				Mips_registers.reg_table[pIDbuf->rd].state = REG_NEED_UPDATE_STALL;
 				printf("[I] %s %s, %u(%s)", 
 								Opcode_table[index].mnemonic, 
 								GET_REGNAME(copied.inst, rt),
@@ -488,7 +511,7 @@ static void STAGE_excute(void)
 				printf("ALU: address = 0x%0x\n", res);
 			}else{
 				pIEbuf->result = res;
-				printf("ALU: res = %u\n", res);
+				printf("ALU: res = %u(forward)\n", res);
 				IE_pipe = pIEbuf->result;	// forwarding data
 			}
 		}else if(BELOW_JUMP(copied.optable_index)){	// Jump method
@@ -538,16 +561,16 @@ static void STAGE_excute(void)
 	STAGE_decode();
 }
 
-#define GET_WORD_DUMMY_DATA(addr) (dummy_data[(addr % 8)] & 0xffffffff)
-#define GET_HALFWORD_DUMMY_DATA(addr) (dummy_data[(addr % 8)] & 0x0000ffff)
-#define GET_BYTE_DUMMY_DATA(addr) (dummy_data[(addr % 8)] & 0x000000ff)
+#define GET_WORD_DUMMY_DATA(addr) (dummy_data[((addr%4)*9 + (addr/4))] & 0xffffffff)
+#define GET_HALFWORD_DUMMY_DATA(addr) (dummy_data[((addr%4)*9 + (addr/4))] & 0x0000ffff)
+#define GET_BYTE_DUMMY_DATA(addr) (dummy_data[((addr%4)*9 + (addr/4))] & 0x000000ff)
 
 #define GET_DUMMY_DATA(addr, size)	\
 	(size == SZ_WORD ? GET_WORD_DUMMY_DATA(addr) : \
 	(size == SZ_HALFWORD ? GET_HALFWORD_DUMMY_DATA(addr) : GET_BYTE_DUMMY_DATA(addr)))
-#define SET_WORD_DUMMY_DATA(addr, val) (dummy_data[(addr % 8)] =  val&0xffffffff)
-#define SET_HALFWORD_DUMMY_DATA(addr, val) (dummy_data[(addr % 8)] = val&0x0000ffff)
-#define SET_BYTE_DUMMY_DATA(addr, val) (dummy_data[(addr % 8)] = val&0x000000ff)
+#define SET_WORD_DUMMY_DATA(addr, val) (dummy_data[((addr%4)*9 + (addr/4))] =  val&0xffffffff)
+#define SET_HALFWORD_DUMMY_DATA(addr, val) (dummy_data[((addr%4)*9 + (addr/4))] = val&0x0000ffff)
+#define SET_BYTE_DUMMY_DATA(addr, val) (dummy_data[((addr%4)*9 + (addr/4))] = val&0x000000ff)
 
 #define SET_DUMMY_DATA(addr, val, size)	\
 	(size == SZ_WORD ? SET_WORD_DUMMY_DATA(addr, val) : \
@@ -646,7 +669,17 @@ static void STAGE_writeback(void)
 		}
 	
 		Mips_registers.reg_table[copied.rd].data = copied.result;
-		Mips_registers.reg_table[copied.rd].state = REG_INIT; 
+		/*
+		 * XXX: ugly fix, it's a special case 
+		 * if register in WB == register in IE == register in ID, 
+		 * don't reset the state of register, should use forwarding state
+		*/
+		if(copied.rd != pipeline_buf.IDbuf.rd && 
+			pipeline_buf.IDbuf.rd != pipeline_buf.IFbuf.inst.r_inst.rs &&
+			pipeline_buf.IFbuf.inst.r_inst.rs != copied.rd)
+		{
+			Mips_registers.reg_table[copied.rd].state = REG_INIT;
+		}
 
 		printf("write %s = 0x%0x\n", 
 				Mips_registers.reg_table[copied.rd].name,
