@@ -15,6 +15,7 @@
 #define PIPELINE_GOTHROW_MEM	1
 #define PIPELINE_GOTHROW_WB		2
 
+//#define DEBUG
 #define MR_BORING_HW
 
 /*
@@ -64,8 +65,8 @@ int clock = 0;
 volatile bool done = false;
 
 //XXX: bad solution
-uint32_t IE_pipe;
-uint32_t MEM_pipe;
+uint32_t IE_pipe[32];
+uint32_t MEM_pipe[32];
 
 union instruction {
 	uint32_t raw;
@@ -293,14 +294,14 @@ static void STAGE_fetch(void)
 #define NEED_STALL			3
 
 #define CHECK_STALL(res, i) \
-	if(res == GET_FROM_IE_PIPE) printf("%s(%d) forwarding from IE, ", Mips_registers.reg_table[(int)i].name, IE_pipe);	\
-	else if(res == GET_FROM_MEM_PIPE) printf("%s(%d) forwarding from MEM, ", Mips_registers.reg_table[(int)i].name, MEM_pipe);	\
+	if(res == GET_FROM_IE_PIPE) printf("%s(%d) forwarding from IE, ", Mips_registers.reg_table[i].name, IE_pipe[i]);	\
+	else if(res == GET_FROM_MEM_PIPE) printf("%s(%d) forwarding from MEM, ", Mips_registers.reg_table[i].name, MEM_pipe[i]);	\
 	else if(res == NEED_STALL) break;
 
 static int _get_regval(int i, uint32_t *targ)
 {
 	if(Mips_registers.reg_table[i].state == REG_NEED_UPDATE_FROM_IE){
-		*targ = IE_pipe;
+		*targ = IE_pipe[i];
 		return GET_FROM_IE_PIPE;
 	}
 
@@ -310,7 +311,7 @@ static int _get_regval(int i, uint32_t *targ)
 	}
 
 	if(Mips_registers.reg_table[i].state == REG_NEED_UPDATE_FROM_MEM){
-		*targ = MEM_pipe;
+		*targ = MEM_pipe[i];
 		return GET_FROM_MEM_PIPE;
 	}
 
@@ -514,8 +515,8 @@ static void STAGE_excute(void)
 				printf("ALU: address = 0x%0x\n", res);
 			}else{
 				pIEbuf->result = res;
-				printf("ALU: res = %u(forward)\n", res);
-				IE_pipe = pIEbuf->result;	// forwarding data
+				printf("ALU: res = %u\n", res);
+				IE_pipe[copied.rd] = pIEbuf->result;	// forwarding data
 			}
 		}else if(BELOW_JUMP(copied.optable_index)){	// Jump method
 			uint32_t jump_targ = Mips_registers.pc;
@@ -627,7 +628,7 @@ static void STAGE_memory(void)
 
 		if(copied.direction == MEM_LOAD){	// load
 			pMEMbuf->result = GET_DUMMY_DATA(copied.mem_addr, copied.sz_access);
-			MEM_pipe = pMEMbuf->result;	// forwarding data
+			MEM_pipe[copied.rd] = pMEMbuf->result;	// forwarding data
 			ll_add_node(&head, copied.mem_addr, pMEMbuf->result, MEM_LOAD);
 			printf("Load 0x%0x from 0x%0x\n", pMEMbuf->result, copied.mem_addr);
 			Mips_registers.reg_table[copied.rd].state = REG_NEED_UPDATE_FROM_MEM;
@@ -682,10 +683,13 @@ static void STAGE_writeback(void)
 		 * if register in WB == register in IE == register in ID, 
 		 * don't reset the state of register, should use forwarding state
 		*/
-		if(copied.rd != pipeline_buf.IDbuf.rd && 
-			pipeline_buf.IDbuf.rd != pipeline_buf.IFbuf.inst.r_inst.rs &&
-			pipeline_buf.IFbuf.inst.r_inst.rs != copied.rd)
+		if(copied.rd == pipeline_buf.IDbuf.rd && 
+			pipeline_buf.IDbuf.rd == pipeline_buf.IFbuf.inst.i_inst.rs &&
+			pipeline_buf.IFbuf.inst.r_inst.rs == copied.rd)
 		{
+			printf("Hit the special case!!!!!  WB(%d) IE(%d) ID(%d)                 ",
+				copied.rd, pipeline_buf.IDbuf.rd, pipeline_buf.IFbuf.inst.i_inst.rs);
+		}else{
 			Mips_registers.reg_table[copied.rd].state = REG_INIT;
 		}
 
@@ -702,7 +706,7 @@ static void STAGE_writeback(void)
 #define DUMP_REGISTER()	register_dump()
 #define FREE_DUMP()		ll_free_all_node(head);
 
-#if 1
+#ifndef DEBUG
 #define CLOCK_CYCLE()	\
 do{\
 	if(done) break;	\

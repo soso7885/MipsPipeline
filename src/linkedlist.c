@@ -13,6 +13,7 @@ static struct node *_new(uint32_t addr, uint32_t data, bool ls)
 	tmp->data = data;
 	tmp->addr = addr;
 	tmp->ls = ls;
+	tmp->next = NULL;
 
 	return tmp;
 }
