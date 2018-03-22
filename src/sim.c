@@ -15,22 +15,12 @@
 #define PIPELINE_GOTHROW_MEM	1
 #define PIPELINE_GOTHROW_WB		2
 
+#define MR_BORING_HW
+
 /*
  * Get the function address to be the data
 */
-/*
-uint64_t dummy_data[] = {
-	(uint64_t)&exit,
-	(uint64_t)&scanf,
-	(uint64_t)&fopen,
-	(uint64_t)&fclose,
-	(uint64_t)&fputc,
-	(uint64_t)&fgetc,
-	(uint64_t)&perror,
-	(uint64_t)&fflush,
-};
-*/
-
+#ifdef MR_BORING_HW
 uint32_t dummy_data[] = {
 	0x00,
 	0x01,
@@ -41,7 +31,7 @@ uint32_t dummy_data[] = {
 	0x05,
 	0x06,
 	0x04,
-/* ---------------------------*/
+// ---------------------------
 	0x02,
 	0x03,
 	0x04,
@@ -49,9 +39,21 @@ uint32_t dummy_data[] = {
 	0x07,
 	0x07,
 	0x08,
-	0x04
+	0x04,
+	0x06
 };
-
+#else
+uint64_t dummy_data[] = {
+	(uint64_t)&exit,
+	(uint64_t)&scanf,
+	(uint64_t)&fopen,
+	(uint64_t)&fclose,
+	(uint64_t)&fputc,
+	(uint64_t)&fgetc,
+	(uint64_t)&perror,
+	(uint64_t)&fflush,
+};
+#endif
 //XXX: use linkedlist to implement it, MR. Boring
 uint8_t pool[POOLSIZE] = {0};
 
@@ -311,7 +313,8 @@ static int _get_regval(int i, uint32_t *targ)
 		*targ = MEM_pipe;
 		return GET_FROM_MEM_PIPE;
 	}
-	
+
+	*targ = Mips_registers.reg_table[i].data;
 	return GET_FROM_REGISTER;
 }
 /*
@@ -344,7 +347,7 @@ static void STAGE_decode(void)
 	if(index == OP_END){
 		fprintf(stderr, "%s: cannot recognize instruction(%d)\n",
 						__func__, copied.inst.raw);
-		return;
+		exit(0);
 	}
 
 	int res;
@@ -534,8 +537,7 @@ static void STAGE_excute(void)
 		}else if(BELOW_BRANCH(copied.optable_index)){	// branch method
 			if(copied.optable_index == OP_BEQ){	// beq
 				if(copied.s1val == copied.rtval){
-			//		Mips_registers.pc += (sizeof(union instruction)+(copied.s2val << 2));
-					Mips_registers.pc = 8;
+					Mips_registers.pc += (sizeof(union instruction)+(copied.s2val << 2));
 					printf("BEQ holds, pc = %d\n", Mips_registers.pc);
 				}else{
 					printf("BEQ not holds\n");
@@ -561,16 +563,22 @@ static void STAGE_excute(void)
 	STAGE_decode();
 }
 
-#define GET_WORD_DUMMY_DATA(addr) (dummy_data[((addr%4)*9 + (addr/4))] & 0xffffffff)
-#define GET_HALFWORD_DUMMY_DATA(addr) (dummy_data[((addr%4)*9 + (addr/4))] & 0x0000ffff)
-#define GET_BYTE_DUMMY_DATA(addr) (dummy_data[((addr%4)*9 + (addr/4))] & 0x000000ff)
+#ifdef MR_BORING_HW
+#define DUMMY_OFFSET(i)	((i%4)*9 + (i/4))
+#else
+#define DUMMY_OFFSET(i)	(i%8)
+#endif	
+
+#define GET_WORD_DUMMY_DATA(addr) (dummy_data[DUMMY_OFFSET(addr)] & 0xffffffff)
+#define GET_HALFWORD_DUMMY_DATA(addr) (dummy_data[DUMMY_OFFSET(addr)] & 0x0000ffff)
+#define GET_BYTE_DUMMY_DATA(addr) (dummy_data[DUMMY_OFFSET(addr)] & 0x000000ff)
 
 #define GET_DUMMY_DATA(addr, size)	\
 	(size == SZ_WORD ? GET_WORD_DUMMY_DATA(addr) : \
 	(size == SZ_HALFWORD ? GET_HALFWORD_DUMMY_DATA(addr) : GET_BYTE_DUMMY_DATA(addr)))
-#define SET_WORD_DUMMY_DATA(addr, val) (dummy_data[((addr%4)*9 + (addr/4))] =  val&0xffffffff)
-#define SET_HALFWORD_DUMMY_DATA(addr, val) (dummy_data[((addr%4)*9 + (addr/4))] = val&0x0000ffff)
-#define SET_BYTE_DUMMY_DATA(addr, val) (dummy_data[((addr%4)*9 + (addr/4))] = val&0x000000ff)
+#define SET_WORD_DUMMY_DATA(addr, val) (dummy_data[DUMMY_OFFSET(addr)] =  val&0xffffffff)
+#define SET_HALFWORD_DUMMY_DATA(addr, val) (dummy_data[DUMMY_OFFSET(addr)] = val&0x0000ffff)
+#define SET_BYTE_DUMMY_DATA(addr, val) (dummy_data[DUMMY_OFFSET(addr)] = val&0x000000ff)
 
 #define SET_DUMMY_DATA(addr, val, size)	\
 	(size == SZ_WORD ? SET_WORD_DUMMY_DATA(addr, val) : \
@@ -717,6 +725,10 @@ int main(int argc, char **argv)
 		printf("Usage: %s [input file]\n", argv[0]);
 		return -1;
 	}
+
+#ifdef MR_BORING_HW
+	printf("Running Mr. Boring's fucking homework!\n");
+#endif
 
 	memset(&pool, 0xff, sizeof(pool));
 
