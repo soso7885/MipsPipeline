@@ -97,7 +97,7 @@ struct _mips_registers Mips_registers = {
 			.describe = "The register for function arguments"
 		},
 		[REG_R5] = {
-			.data = 1,
+			.data = 0,
 			.state = REG_INIT,
 			.name = "$a1",
 			.alias = "r5",

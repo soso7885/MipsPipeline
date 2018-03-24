@@ -8,6 +8,7 @@
 #include "opcode_table.h"
 #include "register_table.h"
 #include "linkedlist.h"
+#include "dummy_data.h"
 
 #define POOLSIZE	512
 
@@ -16,45 +17,11 @@
 #define PIPELINE_GOTHROW_WB		2
 
 //#define DEBUG
-#define MR_BORING_HW
 
 /*
  * Get the function address to be the data
 */
-#ifdef MR_BORING_HW
-uint32_t dummy_data[] = {
-	0x00,
-	0x01,
-	0x02,
-	0x04,
-	0x08,
-	0x05,
-	0x05,
-	0x06,
-	0x04,
-// ---------------------------
-	0x02,
-	0x03,
-	0x04,
-	0x0A,
-	0x07,
-	0x07,
-	0x08,
-	0x04,
-	0x06
-};
-#else
-uint64_t dummy_data[] = {
-	(uint64_t)&exit,
-	(uint64_t)&scanf,
-	(uint64_t)&fopen,
-	(uint64_t)&fclose,
-	(uint64_t)&fputc,
-	(uint64_t)&fgetc,
-	(uint64_t)&perror,
-	(uint64_t)&fflush,
-};
-#endif
+
 //XXX: use linkedlist to implement it, MR. Boring
 uint8_t pool[POOLSIZE] = {0};
 
@@ -392,7 +359,7 @@ static void STAGE_decode(void)
 				res = _get_regval((int)copied.inst.i_inst.rt, &pIDbuf->rtval);
 				CHECK_STALL(res, copied.inst.i_inst.rt);
 				pIDbuf->signal |= (PIPELINE_GOTHROW_MEM | PIPELINE_GOTHROW_WB);
-				Mips_registers.reg_table[pIDbuf->rd].state = REG_NEED_UPDATE_FROM_IE;
+				Mips_registers.reg_table[pIDbuf->rd].state = REG_NEED_UPDATE_STALL;
 				/* 
 				 * For load/store instruction, need stalling 1 stage,
 				 * somark the destation register state to NEED_UPDATE_STALL 
@@ -526,10 +493,10 @@ static void STAGE_excute(void)
 					jump_targ = copied.s1val;
 					break;
 				case OP_JUMP:
-					jump_targ += (sizeof(union instruction) + copied.j_addr/4);
+					jump_targ += (copied.j_addr << 2);
 					break;
 				case OP_JAL:
-					jump_targ += (sizeof(union instruction) + copied.j_addr/4);
+					jump_targ += (copied.j_addr << 2);
 					pIEbuf->result = copied.j_addr;
 					break;
 			}
@@ -687,8 +654,8 @@ static void STAGE_writeback(void)
 			pipeline_buf.IDbuf.rd == pipeline_buf.IFbuf.inst.i_inst.rs &&
 			pipeline_buf.IFbuf.inst.r_inst.rs == copied.rd)
 		{
-			printf("Hit the special case!!!!!  WB(%d) IE(%d) ID(%d)                 ",
-				copied.rd, pipeline_buf.IDbuf.rd, pipeline_buf.IFbuf.inst.i_inst.rs);
+	//		printf("Hit the special case!!!!!  WB(%d) IE(%d) ID(%d)                 ",
+	//			copied.rd, pipeline_buf.IDbuf.rd, pipeline_buf.IFbuf.inst.i_inst.rs);
 		}else{
 			Mips_registers.reg_table[copied.rd].state = REG_INIT;
 		}
@@ -731,7 +698,8 @@ int main(int argc, char **argv)
 	}
 
 #ifdef MR_BORING_HW
-	printf("Running Mr. Boring's fucking homework!\n");
+	printf("\n\nRunning Mr. Boring's fucking homework!\n\n");
+	Mips_registers.reg_table[REG_R5].data = 1;
 #endif
 
 	memset(&pool, 0xff, sizeof(pool));
