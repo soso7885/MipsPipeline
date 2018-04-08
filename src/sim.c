@@ -18,10 +18,6 @@
 
 //#define DEBUG
 
-/*
- * Get the function address to be the data
-*/
-
 //XXX: use linkedlist to implement it, MR. Boring
 uint8_t pool[POOLSIZE] = {0};
 
@@ -30,6 +26,7 @@ struct node *head = NULL;
 
 int clock = 0;
 volatile bool done = false;
+volatile bool dont_stop = false;
 
 //XXX: bad solution
 uint32_t IE_pipe[32];
@@ -51,7 +48,7 @@ union instruction {
 		uint8_t opcode : 6;
 	}__attribute__((packed)) r_inst;
 	struct {	// 16+5+5+6 = 32
-		uint16_t imm;		
+		int16_t imm;		
 		uint8_t rt : 5;
 		uint8_t rs : 5;
 		uint8_t opcode : 6;
@@ -81,7 +78,7 @@ struct decode_buffer {
 	int optable_index;
 	uint8_t opcode;
 	uint32_t s1val;
-	uint32_t s2val;
+	int32_t s2val;
 	uint32_t rtval;
 	uint8_t rd;	// destination register;
 	uint8_t shamt;
@@ -229,12 +226,13 @@ static void STAGE_fetch(void)
 
 	inst = (union instruction *)&pool[*pc];
 	if(inst->raw == end){
-		pIFbuf->stop = true;
+		if(!dont_stop) 
+			pIFbuf->stop = true;
 		return;
 	}
+	printf("<IF> instruction(%u), pc(%d), ", inst->raw, *pc);
 
 	*pc += sizeof(union instruction);
-	printf("<IF> instruction(%u), ", inst->raw);
 
 	/* for debug, in real world, fetch will not distinguish the format */
 	if(inst->r_inst.opcode == 0){
@@ -321,25 +319,27 @@ static void STAGE_decode(void)
 	int res;
 	int type = Opcode_table[index].type;
 
-	pIDbuf->optable_index = index;
-	pIDbuf->signal = PIPELINE_BYPASS;
+	pIDbuf->optable_index	= index;
+	pIDbuf->signal			= PIPELINE_BYPASS;
 	
 	switch(type){
 		case R_FORMAT:
-			pIDbuf->opcode = copied.inst.r_inst.opcode;
-			pIDbuf->rd = copied.inst.r_inst.rd;
-			pIDbuf->shamt = copied.inst.r_inst.shamt;
-			pIDbuf->funct = copied.inst.r_inst.funct;
-			pIDbuf->signal |= PIPELINE_GOTHROW_WB;
+			pIDbuf->opcode	= copied.inst.r_inst.opcode;
+			pIDbuf->rd		= copied.inst.r_inst.rd;
+			pIDbuf->shamt	= copied.inst.r_inst.shamt;
+			pIDbuf->funct	= copied.inst.r_inst.funct;
+			pIDbuf->signal	|= PIPELINE_GOTHROW_WB;
+
 			res = _get_regval((int)copied.inst.r_inst.rs, &pIDbuf->s1val);
 			CHECK_STALL(res, copied.inst.r_inst.rs);
-			res = _get_regval((int)copied.inst.r_inst.rt, &pIDbuf->s2val);
+			res = _get_regval((int)copied.inst.r_inst.rt, (uint32_t *)&pIDbuf->s2val);
 			CHECK_STALL(res, copied.inst.r_inst.rt);
-			Mips_registers.reg_table[pIDbuf->rd].state = REG_NEED_UPDATE_FROM_IE;
 			/* 
 			 * For R type instruction, using forwarding data from
 			 * IE, so mark the destation register state to NEED_UPDATE_FROM_IE 
 			*/	
+			Mips_registers.reg_table[pIDbuf->rd].state = REG_NEED_UPDATE_FROM_IE;
+			
 			printf("[R] %s %s %s %s",
 						Opcode_table[index].mnemonic,
 						GET_REGNAME(copied.inst, rd), 
@@ -348,22 +348,23 @@ static void STAGE_decode(void)
 			break;
 		case I_FORMAT:
 		{
-			pIDbuf->opcode = copied.inst.i_inst.opcode;
+			pIDbuf->opcode	= copied.inst.i_inst.opcode;
+			pIDbuf->s2val	= copied.inst.i_inst.imm;
+			pIDbuf->rd		= copied.inst.i_inst.rt;
+
 			res = _get_regval((int)copied.inst.i_inst.rs, &pIDbuf->s1val);
 			CHECK_STALL(res, copied.inst.i_inst.rs);
-			pIDbuf->s2val = copied.inst.i_inst.imm;
-			pIDbuf->rd = copied.inst.i_inst.rt;
 
 			/* load/store instruction specific */
 			if(BELOW_LOAD_STORE(index)){
 				res = _get_regval((int)copied.inst.i_inst.rt, &pIDbuf->rtval);
 				CHECK_STALL(res, copied.inst.i_inst.rt);
 				pIDbuf->signal |= (PIPELINE_GOTHROW_MEM | PIPELINE_GOTHROW_WB);
-				Mips_registers.reg_table[pIDbuf->rd].state = REG_NEED_UPDATE_STALL;
 				/* 
 				 * For load/store instruction, need stalling 1 stage,
 				 * somark the destation register state to NEED_UPDATE_STALL 
 				*/
+				Mips_registers.reg_table[pIDbuf->rd].state = REG_NEED_UPDATE_STALL;
 				printf("[I] %s %s, %u(%s)", 
 								Opcode_table[index].mnemonic, 
 								GET_REGNAME(copied.inst, rt),
@@ -385,7 +386,7 @@ static void STAGE_decode(void)
 				 * so mark the destation register state to NEED_UPDATE_FROM_IE
 				*/
 				Mips_registers.reg_table[pIDbuf->rd].state = REG_NEED_UPDATE_FROM_IE;
-				printf("[I] %s %s %s, %u", 
+				printf("[I] %s %s %s, %d", 
 								Opcode_table[index].mnemonic, 
 								GET_REGNAME(copied.inst, rt), 
 								GET_REGNAME(copied.inst, rs), 
@@ -402,6 +403,8 @@ static void STAGE_decode(void)
 				pIDbuf->rd = REG_R31;
 				Mips_registers.reg_table[pIDbuf->rd].state = REG_NEED_UPDATE_FROM_IE;
 			}
+			dont_stop = true;
+			pipeline_buf.IFbuf.flush = true;
 			printf("[J] %s 0x%0x",
 						Opcode_table[index].mnemonic,
 						copied.inst.j_inst.addr);
@@ -493,7 +496,7 @@ static void STAGE_excute(void)
 					jump_targ = copied.s1val;
 					break;
 				case OP_JUMP:
-					jump_targ += (copied.j_addr << 2);
+					jump_targ = (copied.j_addr << 2);
 					break;
 				case OP_JAL:
 					jump_targ += (copied.j_addr << 2);
@@ -501,18 +504,19 @@ static void STAGE_excute(void)
 					break;
 			}
 			Mips_registers.pc = jump_targ;	// update PC
+			dont_stop = false;
 			printf("jump to 0x%0x\n", jump_targ);
 		}else if(BELOW_BRANCH(copied.optable_index)){	// branch method
 			if(copied.optable_index == OP_BEQ){	// beq
 				if(copied.s1val == copied.rtval){
-					Mips_registers.pc += (sizeof(union instruction)+(copied.s2val << 2));
+					Mips_registers.pc = (copied.s2val << 2);
 					printf("BEQ holds, pc = %d\n", Mips_registers.pc);
 				}else{
 					printf("BEQ not holds\n");
 				}
 			}else{	// bne
 				if(copied.s1val != copied.rtval){
-					Mips_registers.pc += (sizeof(union instruction)+(copied.s2val << 2));
+					Mips_registers.pc = (copied.s2val << 2);
 					printf("BNE holds, pc = %d\n", Mips_registers.pc);
 				}else{
 					printf("BNE not holds\n");
@@ -698,8 +702,10 @@ int main(int argc, char **argv)
 	}
 
 #ifdef MR_BORING_HW
-	printf("\n\nRunning Mr. Boring's fucking homework!\n\n");
+	printf("\nRunning Mr. Boring's fucking homework!\n\n");
 	Mips_registers.reg_table[REG_R5].data = 1;
+	Mips_registers.reg_table[REG_R7].data = 9;
+	Mips_registers.reg_table[REG_R15].data = 1;
 #endif
 
 	memset(&pool, 0xff, sizeof(pool));
@@ -716,10 +722,13 @@ int main(int argc, char **argv)
 	CLOCK_CYCLE();
 	STAGE_writeback();
 	CLOCK_CYCLE();
+	
 	while(!done){
 		STAGE_writeback();
 		CLOCK_CYCLE();
 	}
+
+	DUMP_REGISTER();
 
 	FREE_DUMP();
 	

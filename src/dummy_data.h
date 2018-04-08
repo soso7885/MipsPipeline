@@ -26,7 +26,6 @@ uint32_t dummy_data[] = {
 	0x06
 };
 #else
-
 /*
  * Get the function address to be the data
 */
@@ -41,5 +40,4 @@ uint32_t dummy_data[] = {
 	(uint32_t)&fflush,
 };
 #endif
-
 #endif
