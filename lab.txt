@@ -1,0 +1,35 @@
+#
+# for convert assembly to binary, please use the online tool:
+# http://www.kurtm.net/mipsasm/index.cgi
+#
+
+# 
+# addu $1 $0 $0
+# loop:
+#	beq $7 $0 done (done = 10)
+# 	lw $2 0($3)
+# 	lw $4 0($5)
+# 	mult $2 $2 $4
+#	addu $1 $1 $2 
+# 	addiu $3 $3, 4
+# 	addiu $5 $5, 4
+# 	/* addiu $7 $7, 1 */
+#	sub $7 $7 $15 
+# 	j loop		(loop = 1)
+# done:
+#	jr $31
+#
+
+2081
+283115530
+2355232768
+2359558144
+4460568
+2230305
+610467844
+614793220
+15677474
+134217729
+0
+#jr
+

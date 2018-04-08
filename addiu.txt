@@ -1,0 +1,13 @@
+#
+# for convert assembly to binary, please use the online tool:
+# http://www.kurtm.net/mipsasm/index.cgi
+#
+
+#
+# addiu $7 $7, -1
+#
+
+#134217729
+#619184127
+15677474
+
